@@ -1,0 +1,113 @@
+#cloud-config
+# Dit script wordt EENMALIG uitgevoerd bij de eerste boot.
+# Bij latere deallocate/start-cycli wordt dit NIET opnieuw uitgevoerd.
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - wget
+  - jq
+
+write_files:
+  # Ollama systemd service override:
+  # - Luistert op alle interfaces (zodat de NSG de toegang beheert)
+  # - Slaat models op op de data disk
+  - path: /etc/systemd/system/ollama.service.d/override.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Service]
+      Environment="OLLAMA_HOST=0.0.0.0:${ollama_port}"
+      Environment="OLLAMA_MODELS=/mnt/ollama-models"
+      Restart=on-failure
+      RestartSec=5
+
+  # Script om de data disk te mounten (idempotent)
+  - path: /usr/local/bin/mount-ollama-disk.sh
+    owner: root:root
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      MOUNT_POINT="/mnt/ollama-models"
+
+      # Azure koppelt de data disk (LUN 0) als /dev/disk/azure/scsi1/lun0
+      if [ -e /dev/disk/azure/scsi1/lun0 ]; then
+        DEVICE=$(readlink -f /dev/disk/azure/scsi1/lun0)
+      else
+        echo "WARN: LUN 0 device niet gevonden, probeer /dev/sdc"
+        DEVICE="/dev/sdc"
+      fi
+
+      mkdir -p "$MOUNT_POINT"
+
+      # Alleen formatteren als nog niet ext4
+      if ! blkid "$DEVICE" | grep -q ext4; then
+        echo "Formatteren van $DEVICE als ext4..."
+        mkfs.ext4 -L ollama-models "$DEVICE"
+      fi
+
+      # Mounten als nog niet gemount
+      if ! mountpoint -q "$MOUNT_POINT"; then
+        mount LABEL=ollama-models "$MOUNT_POINT"
+        echo "Gemount: $DEVICE op $MOUNT_POINT"
+      fi
+
+      # Persisteren in /etc/fstab zodat het na reboot automatisch wordt gemount
+      if ! grep -q "ollama-models" /etc/fstab; then
+        echo "LABEL=ollama-models $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
+      fi
+
+      # Eigenaar instellen voor de admin-gebruiker
+      chown -R ${admin_username}:${admin_username} "$MOUNT_POINT" 2>/dev/null || true
+      chmod 755 "$MOUNT_POINT"
+
+  # Systemd unit die de disk mount vóór Ollama start
+  - path: /etc/systemd/system/ollama-disk.service
+    owner: root:root
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=Mount Ollama model storage disk
+      Before=ollama.service
+      After=local-fs.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/bin/mount-ollama-disk.sh
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # 1. Data disk mounten
+  - /usr/local/bin/mount-ollama-disk.sh
+
+  # 2. Ollama installeren via het officiële installatiescript
+  - curl -fsSL https://ollama.com/install.sh | sh
+
+  # 3. Systemd herladen en services activeren
+  - systemctl daemon-reload
+  - systemctl enable ollama-disk.service
+  - systemctl enable ollama
+  - systemctl restart ollama
+
+  # 4. Wachten tot Ollama klaar is en daarna het standaard model pullen
+  - |
+    echo "Wachten tot Ollama beschikbaar is..."
+    for i in $(seq 1 30); do
+      if curl -sf http://localhost:${ollama_port}/api/tags > /dev/null 2>&1; then
+        echo "Ollama is beschikbaar."
+        break
+      fi
+      sleep 5
+    done
+    ollama pull ${default_model} \
+      && echo "Model ${default_model} succesvol gepulled." \
+      || echo "WAARSCHUWING: Model pull mislukt. Handmatig uitvoeren: ollama pull ${default_model}"
+
+  # 5. Setup-logboek bijwerken
+  - echo "Cloud-init voltooid op $(date)" >> /var/log/ollama-setup.log

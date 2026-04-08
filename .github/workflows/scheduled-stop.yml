@@ -1,0 +1,60 @@
+name: Automatisch stoppen (20:00 CET)
+
+on:
+  # 20:00 CET  (winter, okt-mrt) = 19:00 UTC
+  # 20:00 CEST (zomer, apr-okt)  = 18:00 UTC
+  # Beide tijden draaien zodat de zomertijdovergang wordt afgedekt.
+  schedule:
+    - cron: "0 18 * * *"   # 20:00 CEST (zomertijd)
+    - cron: "0 19 * * *"   # 20:00 CET  (wintertijd)
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reden voor handmatige trigger"
+        required: false
+        default: "Handmatige stop"
+
+permissions:
+  contents: read
+
+jobs:
+  auto-stop:
+    name: Automatische VM-stop
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+
+      - name: VM-status controleren
+        id: vmstate
+        run: |
+          STATE=$(az vm get-instance-view \
+            --resource-group "${{ vars.RESOURCE_GROUP_NAME }}" \
+            --name "${{ vars.VM_NAME }}" \
+            --query "instanceView.statuses[?starts_with(code, 'PowerState/')].code" \
+            --output tsv)
+          echo "state=$STATE" >> "$GITHUB_OUTPUT"
+          echo "Huidige VM-status: $STATE"
+
+      - name: Deallocaten als VM actief is
+        if: steps.vmstate.outputs.state == 'PowerState/running'
+        run: |
+          echo "VM is actief. Deallocaten op geplande tijd..."
+          az vm deallocate \
+            --resource-group "${{ vars.RESOURCE_GROUP_NAME }}" \
+            --name "${{ vars.VM_NAME }}"
+          echo "Gedaan."
+
+      - name: Overslaan als VM al gestopt is
+        if: steps.vmstate.outputs.state != 'PowerState/running'
+        run: |
+          echo "VM heeft al status '${{ steps.vmstate.outputs.state }}'. Geen actie nodig."

@@ -1,0 +1,94 @@
+name: Deploy Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      vm_size:
+        description: "VM-grootte overschrijven (leeg = gebruik GitHub Variable VM_SIZE)"
+        required: false
+        default: ""
+      destroy:
+        description: "Typ 'true' om alle resources te verwijderen"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+env:
+  TF_DIR: ./terraform
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+jobs:
+  terraform:
+    name: Terraform ${{ github.event.inputs.destroy == 'true' && 'Destroy' || 'Apply' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ secrets.TF_BACKEND_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ secrets.TF_BACKEND_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ secrets.TF_BACKEND_CONTAINER }}"
+
+      - name: Bepaal VM-grootte
+        id: vmsize
+        run: |
+          INPUT="${{ github.event.inputs.vm_size }}"
+          VAR="${{ vars.VM_SIZE }}"
+          # Volgorde: workflow input > GitHub Variable > ingebouwde default
+          SIZE="${INPUT:-${VAR:-Standard_D8s_v5}}"
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "VM-grootte: $SIZE"
+
+      - name: Terraform Plan
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          DESTROY_FLAG=""
+          if [ "${{ github.event.inputs.destroy }}" = "true" ]; then
+            DESTROY_FLAG="-destroy"
+          fi
+
+          terraform plan $DESTROY_FLAG \
+            -var="location=${{ vars.AZURE_LOCATION }}" \
+            -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
+            -var="vm_name=${{ vars.VM_NAME }}" \
+            -var="vm_size=${{ steps.vmsize.outputs.size }}" \
+            -var="vm_data_disk_size_gb=${{ vars.VM_DATA_DISK_SIZE_GB }}" \
+            -var="ssh_public_key=${{ secrets.SSH_PUBLIC_KEY }}" \
+            -var="allowed_ip=${{ vars.ALLOWED_IP }}" \
+            -var="ollama_port=${{ vars.OLLAMA_PORT }}" \
+            -var="default_model=${{ vars.DEFAULT_MODEL }}" \
+            -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Verbindingsgegevens tonen
+        if: github.event.inputs.destroy != 'true'
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          echo "## Ollama Deployment Geslaagd" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| | |" >> $GITHUB_STEP_SUMMARY
+          echo "|--|--|" >> $GITHUB_STEP_SUMMARY
+          echo "| Publiek IP | $(terraform output -raw public_ip_address) |" >> $GITHUB_STEP_SUMMARY
+          echo "| SSH | \`$(terraform output -raw ssh_command)\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Ollama API | \`$(terraform output -raw ollama_api_url)\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| VM-grootte | ${{ steps.vmsize.outputs.size }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> **Volgende stap:** Voer de 'Stop Ollama VM' workflow uit zodat de VM niet onnodig doorloopt." >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,94 @@
+name: IP-adres bijwerken in NSG
+
+# Voer deze workflow uit vanuit de browser als jouw thuis-IP is veranderd.
+# Vul jouw huidige IP in (te vinden via https://ifconfig.me).
+
+on:
+  workflow_dispatch:
+    inputs:
+      manual_ip:
+        description: "Jouw huidige publieke IP-adres (bijv. 203.0.113.42)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  update-ip:
+    name: NSG IP bijwerken
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: IP valideren
+        id: validate
+        run: |
+          IP="${{ github.event.inputs.manual_ip }}"
+          # Eenvoudige IPv4-validatie
+          if ! echo "$IP" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+            echo "FOUT: '$IP' is geen geldig IPv4-adres."
+            exit 1
+          fi
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+          echo "Geldig IP: $IP"
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+
+      - name: SSH-regel bijwerken in NSG
+        run: |
+          az network nsg rule update \
+            --resource-group "${{ vars.RESOURCE_GROUP_NAME }}" \
+            --nsg-name "nsg-ollama" \
+            --name "AllowSSHFromMyIP" \
+            --source-address-prefix "${{ steps.validate.outputs.ip }}/32"
+
+      - name: Ollama-regel bijwerken in NSG
+        run: |
+          az network nsg rule update \
+            --resource-group "${{ vars.RESOURCE_GROUP_NAME }}" \
+            --nsg-name "nsg-ollama" \
+            --name "AllowOllamaFromMyIP" \
+            --source-address-prefix "${{ steps.validate.outputs.ip }}/32"
+
+      - name: GitHub Variable ALLOWED_IP bijwerken
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          NEW_IP="${{ steps.validate.outputs.ip }}"
+
+          # Controleren of de variable al bestaat
+          HTTP_STATUS=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            repos/$REPO/actions/variables/ALLOWED_IP \
+            --jq '.name' 2>/dev/null \
+            && echo "exists" || echo "missing")
+
+          if [ "$HTTP_STATUS" = "exists" ]; then
+            gh api --method PATCH \
+              -H "Accept: application/vnd.github+json" \
+              repos/$REPO/actions/variables/ALLOWED_IP \
+              -f value="$NEW_IP"
+            echo "ALLOWED_IP bijgewerkt naar $NEW_IP"
+          else
+            gh api --method POST \
+              -H "Accept: application/vnd.github+json" \
+              repos/$REPO/actions/variables \
+              -f name="ALLOWED_IP" -f value="$NEW_IP"
+            echo "ALLOWED_IP aangemaakt met waarde $NEW_IP"
+          fi
+
+      - name: Samenvatting
+        run: |
+          echo "## IP Bijgewerkt" >> $GITHUB_STEP_SUMMARY
+          echo "NSG-regels en GitHub Variable \`ALLOWED_IP\` bijgewerkt naar: \`${{ steps.validate.outputs.ip }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "De volgende Terraform deploy gebruikt dit IP automatisch." >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,40 @@
+name: Stop Ollama VM (Deallocate)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stop-vm:
+    name: VM deallocaten
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+
+      - name: VM deallocaten
+        run: |
+          echo "VM ${{ vars.VM_NAME }} deallocaten..."
+          # 'deallocate' (niet 'stop') geeft de compute-toewijzing vrij.
+          # Hiermee stoppen de compute-kosten. De disk en het statische IP blijven behouden.
+          az vm deallocate \
+            --resource-group "${{ vars.RESOURCE_GROUP_NAME }}" \
+            --name "${{ vars.VM_NAME }}"
+          echo "VM gedealloceert. Compute-kosten zijn gestopt."
+
+      - name: Samenvatting
+        run: |
+          echo "## VM Gedealloceert" >> $GITHUB_STEP_SUMMARY
+          echo "Compute-kosten zijn gestopt." >> $GITHUB_STEP_SUMMARY
+          echo "Disk- en IP-kosten lopen door (~€20/maand)." >> $GITHUB_STEP_SUMMARY

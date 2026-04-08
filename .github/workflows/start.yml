@@ -1,0 +1,64 @@
+name: Start Ollama VM
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  start-vm:
+    name: VM starten
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+
+      - name: VM starten
+        run: |
+          echo "VM ${{ vars.VM_NAME }} starten..."
+          az vm start \
+            --resource-group "${{ vars.RESOURCE_GROUP_NAME }}" \
+            --name "${{ vars.VM_NAME }}"
+
+      - name: Wachten tot VM actief is
+        run: |
+          echo "Wachten tot VM de status 'Running' heeft..."
+          az vm wait \
+            --resource-group "${{ vars.RESOURCE_GROUP_NAME }}" \
+            --name "${{ vars.VM_NAME }}" \
+            --custom "instanceView.statuses[?code=='PowerState/running']"
+          echo "VM is actief."
+
+      - name: Publiek IP ophalen
+        id: ip
+        run: |
+          IP=$(az vm show \
+            --resource-group "${{ vars.RESOURCE_GROUP_NAME }}" \
+            --name "${{ vars.VM_NAME }}" \
+            --show-details \
+            --query publicIps \
+            --output tsv)
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+
+      - name: Samenvatting
+        run: |
+          echo "## Ollama VM Gestart" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| | |" >> $GITHUB_STEP_SUMMARY
+          echo "|--|--|" >> $GITHUB_STEP_SUMMARY
+          echo "| Publiek IP | \`${{ steps.ip.outputs.ip }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| SSH | \`ssh -i ~/.ssh/id_ed25519_ollama ollamaadmin@${{ steps.ip.outputs.ip }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Ollama API | \`http://${{ steps.ip.outputs.ip }}:${{ vars.OLLAMA_PORT }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> Ollama kan 30-60 seconden na de VM-start nodig hebben om te reageren op API-aanroepen." >> $GITHUB_STEP_SUMMARY
+          echo "> De VM stopt automatisch om 20:00 CET." >> $GITHUB_STEP_SUMMARY
