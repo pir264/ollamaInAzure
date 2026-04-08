@@ -68,6 +68,19 @@ variable "ollama_port" {
   default     = 11434
 }
 
+# ── Spot ─────────────────────────────────────────────────────────────────────
+variable "use_spot" {
+  type        = bool
+  description = "Gebruik Azure Spot pricing. Goedkoper maar VM kan worden geëvicteerd door Azure."
+  default     = false
+}
+
+variable "spot_max_bid_price" {
+  type        = number
+  description = "Maximum prijs per uur voor Spot VM. -1 = betaal tot maximaal de on-demand prijs."
+  default     = -1
+}
+
 # ── Ollama ────────────────────────────────────────────────────────────────────
 variable "default_model" {
   type        = string

@@ -124,6 +124,11 @@ resource "azurerm_linux_virtual_machine" "ollama" {
   admin_username      = var.admin_username
   tags                = azurerm_resource_group.ollama.tags
 
+  # Spot configuratie — alleen actief als use_spot = true
+  priority        = var.use_spot ? "Spot" : "Regular"
+  eviction_policy = var.use_spot ? "Deallocate" : null
+  max_bid_price   = var.use_spot ? var.spot_max_bid_price : null
+
   network_interface_ids = [
     azurerm_network_interface.ollama.id,
   ]

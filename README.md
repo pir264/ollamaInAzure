@@ -17,8 +17,9 @@ Deployt een [Ollama](https://ollama.com) instantie op een Azure VM via GitHub Ac
 | VM uit (alleen disk + IP) | ~€20/maand |
 | Standard_D8s_v5, 8u/dag, 22 werkdagen | ~€90/maand |
 | Standard_D4s_v5, 8u/dag, 22 werkdagen | ~€57/maand |
+| Standard_NV6ads_A10_v5 Spot, 8u/dag, 22 werkdagen | ~€18/maand |
 
-VM-grootte aanpassen: GitHub Variable `VM_SIZE` wijzigen en de deploy workflow opnieuw uitvoeren.
+VM-grootte en Spot aanpassen via GitHub Variables — geen code wijzigen nodig.
 
 ## Workflows
 
@@ -111,6 +112,7 @@ Ga naar: **Settings → Secrets and variables → Actions → Variables**
 | `VM_NAME` | `vm-ollama` | Naam van de VM |
 | `DEFAULT_MODEL` | `gemma4:latest` | Model dat bij eerste boot wordt gepulled |
 | `ALLOWED_IP` | jouw IP | Jouw publieke IP-adres (check via [ifconfig.me](https://ifconfig.me)) |
+| `USE_SPOT` | `false` | `true` om Azure Spot pricing te gebruiken |
 
 ### 6. Deployen
 
@@ -153,14 +155,28 @@ Voer de **IP-adres bijwerken** workflow uit en vul jouw nieuwe IP in. Je kunt jo
 Geen code wijzigen nodig:
 
 1. Ga naar **Settings → Secrets and variables → Actions → Variables**
-2. Wijzig `VM_SIZE` naar de gewenste SKU (zie tabel hieronder)
-3. Voer **Deploy Infrastructure** workflow uit
+2. Wijzig `VM_SIZE` en/of `USE_SPOT`
+3. Voer **Deploy Infrastructure** workflow uit met `recreate_vm = true`
 
-| VM-grootte | vCPU | RAM | Indicatieve kosten/uur |
-|------------|------|-----|------------------------|
-| `Standard_D4s_v5` | 4 | 16 GB | ~€0,17 |
-| `Standard_D8s_v5` | 8 | 32 GB | ~€0,34 |
-| `Standard_D16s_v5` | 16 | 64 GB | ~€0,68 |
+| VM-grootte | vCPU | RAM | GPU | On-demand/uur | Spot/uur |
+|------------|------|-----|-----|---------------|----------|
+| `Standard_D4s_v5` | 4 | 16 GB | — | ~€0,17 | ~€0,04 |
+| `Standard_D8s_v5` | 8 | 32 GB | — | ~€0,34 | ~€0,07 |
+| `Standard_D16s_v5` | 16 | 64 GB | — | ~€0,68 | ~€0,14 |
+| `Standard_NV6ads_A10_v5` | 6 | 55 GB | 1/6 A10 | ~€0,45 | ~€0,10 |
+| `Standard_NV12ads_A10_v5` | 12 | 110 GB | 1/3 A10 | ~€0,90 | ~€0,20 |
+| `Standard_NV36ads_A10_v5` | 36 | 440 GB | 1× A10 | ~€3,60 | ~€0,60 |
+
+> **Spot VMs** kunnen door Azure worden geëvicteerd als de capaciteit nodig is. De VM wordt dan deallocated — jouw modellen op de data disk blijven intact. Herstart via de **Start Ollama VM** workflow.
+
+### VM vervangen (bijv. van CPU naar GPU)
+
+Dit kan in één workflow-run zonder de data disk te verliezen:
+
+**Actions → Deploy Infrastructure → Run workflow**
+- `vm_size`: nieuwe SKU (bijv. `Standard_NV6ads_A10_v5`)
+- `use_spot`: `true` of `false`
+- `recreate_vm`: `true`
 
 ## Extra model toevoegen
 

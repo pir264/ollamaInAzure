@@ -7,6 +7,23 @@ on:
         description: "VM-grootte overschrijven (leeg = gebruik GitHub Variable VM_SIZE)"
         required: false
         default: ""
+      use_spot:
+        description: "Gebruik Azure Spot pricing (goedkoper, maar kan worden geëvicteerd)"
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - "true"
+          - "false"
+      recreate_vm:
+        description: "Verwijder en hermaak alleen de VM (disk blijft intact)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
       destroy:
         description: "Typ 'true' om alle resources te verwijderen"
         required: false
@@ -44,25 +61,33 @@ jobs:
             -backend-config="storage_account_name=${{ secrets.TF_BACKEND_STORAGE_ACCOUNT }}" \
             -backend-config="container_name=${{ secrets.TF_BACKEND_CONTAINER }}"
 
-      - name: Bepaal VM-grootte
+      - name: Bepaal VM-grootte en Spot instelling
         id: vmsize
         run: |
           INPUT="${{ github.event.inputs.vm_size }}"
           VAR="${{ vars.VM_SIZE }}"
-          # Volgorde: workflow input > GitHub Variable > ingebouwde default
           SIZE="${INPUT:-${VAR:-Standard_D8s_v5}}"
           echo "size=$SIZE" >> "$GITHUB_OUTPUT"
           echo "VM-grootte: $SIZE"
 
+          SPOT_INPUT="${{ github.event.inputs.use_spot }}"
+          SPOT_VAR="${{ vars.USE_SPOT }}"
+          SPOT="${SPOT_INPUT:-${SPOT_VAR:-false}}"
+          echo "spot=$SPOT" >> "$GITHUB_OUTPUT"
+          echo "Spot: $SPOT"
+
       - name: Terraform Plan
         working-directory: ${{ env.TF_DIR }}
         run: |
-          DESTROY_FLAG=""
+          EXTRA_FLAGS=""
           if [ "${{ github.event.inputs.destroy }}" = "true" ]; then
-            DESTROY_FLAG="-destroy"
+            EXTRA_FLAGS="-destroy"
+          elif [ "${{ github.event.inputs.recreate_vm }}" = "true" ]; then
+            # Vervangt alleen de VM en de disk-koppeling; de data disk zelf blijft intact.
+            EXTRA_FLAGS="-replace=azurerm_linux_virtual_machine.ollama -replace=azurerm_virtual_machine_data_disk_attachment.ollama_models"
           fi
 
-          terraform plan $DESTROY_FLAG \
+          terraform plan $EXTRA_FLAGS \
             -var="location=${{ vars.AZURE_LOCATION }}" \
             -var="resource_group_name=${{ vars.RESOURCE_GROUP_NAME }}" \
             -var="vm_name=${{ vars.VM_NAME }}" \
@@ -72,6 +97,7 @@ jobs:
             -var="allowed_ip=${{ vars.ALLOWED_IP }}" \
             -var="ollama_port=${{ vars.OLLAMA_PORT }}" \
             -var="default_model=${{ vars.DEFAULT_MODEL }}" \
+            -var="use_spot=${{ steps.vmsize.outputs.spot }}" \
             -out=tfplan
 
       - name: Terraform Apply

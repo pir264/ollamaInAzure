@@ -9,6 +9,7 @@ packages:
   - curl
   - wget
   - jq
+  - ubuntu-drivers-common
 
 write_files:
   # Ollama systemd service override:
@@ -89,19 +90,29 @@ runcmd:
   # 1. Data disk mounten
   - /usr/local/bin/mount-ollama-disk.sh
 
-  # 2. Ollama installeren via het officiële installatiescript
+  # 2. NVIDIA drivers installeren als er een GPU aanwezig is
+  - |
+    if lspci | grep -qi nvidia; then
+      echo "NVIDIA GPU gedetecteerd, drivers installeren..."
+      ubuntu-drivers autoinstall
+      echo "NVIDIA drivers geïnstalleerd."
+    else
+      echo "Geen NVIDIA GPU gevonden, drivers overgeslagen."
+    fi
+
+  # 3. Ollama installeren via het officiële installatiescript
   - curl -fsSL https://ollama.com/install.sh | sh
 
-  # 3. Eigenaar van de mount corrigeren naar de ollama service-gebruiker
+  # 4. Eigenaar van de mount corrigeren naar de ollama service-gebruiker
   - chown -R ollama:ollama /mnt/ollama-models
 
-  # 4. Systemd herladen en services activeren
+  # 5. Systemd herladen en services activeren
   - systemctl daemon-reload
   - systemctl enable ollama-disk.service
   - systemctl enable ollama
   - systemctl restart ollama
 
-  # 5. Wachten tot Ollama klaar is en daarna het standaard model pullen
+  # 6. Wachten tot Ollama klaar is en daarna het standaard model pullen
   - |
     echo "Wachten tot Ollama beschikbaar is..."
     for i in $(seq 1 30); do
@@ -115,5 +126,5 @@ runcmd:
       && echo "Model ${default_model} succesvol gepulled." \
       || echo "WAARSCHUWING: Model pull mislukt. Handmatig uitvoeren: ollama pull ${default_model}"
 
-  # 6. Setup-logboek bijwerken
+  # 7. Setup-logboek bijwerken
   - echo "Cloud-init voltooid op $(date)" >> /var/log/ollama-setup.log
