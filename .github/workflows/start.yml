@@ -57,7 +57,7 @@ jobs:
           echo "| | |" >> $GITHUB_STEP_SUMMARY
           echo "|--|--|" >> $GITHUB_STEP_SUMMARY
           echo "| Publiek IP | \`${{ steps.ip.outputs.ip }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| SSH | \`ssh -i ~/.ssh/id_ed25519_ollama ollamaadmin@${{ steps.ip.outputs.ip }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| SSH | \`ssh -i ~/.ssh/id_rsa_ollama ollamaadmin@${{ steps.ip.outputs.ip }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Ollama API | \`http://${{ steps.ip.outputs.ip }}:${{ vars.OLLAMA_PORT }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "> Ollama kan 30-60 seconden na de VM-start nodig hebben om te reageren op API-aanroepen." >> $GITHUB_STEP_SUMMARY

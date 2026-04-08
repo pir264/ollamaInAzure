@@ -60,8 +60,11 @@ write_files:
         echo "LABEL=ollama-models $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
       fi
 
-      # Eigenaar instellen voor de admin-gebruiker
-      chown -R ${admin_username}:${admin_username} "$MOUNT_POINT" 2>/dev/null || true
+      # Eigenaar instellen voor de Ollama service-gebruiker
+      # (wordt aangemaakt door de Ollama installer, dus na installatie nogmaals uitgevoerd)
+      if id ollama &>/dev/null; then
+        chown -R ollama:ollama "$MOUNT_POINT"
+      fi
       chmod 755 "$MOUNT_POINT"
 
   # Systemd unit die de disk mount vóór Ollama start
@@ -89,13 +92,16 @@ runcmd:
   # 2. Ollama installeren via het officiële installatiescript
   - curl -fsSL https://ollama.com/install.sh | sh
 
-  # 3. Systemd herladen en services activeren
+  # 3. Eigenaar van de mount corrigeren naar de ollama service-gebruiker
+  - chown -R ollama:ollama /mnt/ollama-models
+
+  # 4. Systemd herladen en services activeren
   - systemctl daemon-reload
   - systemctl enable ollama-disk.service
   - systemctl enable ollama
   - systemctl restart ollama
 
-  # 4. Wachten tot Ollama klaar is en daarna het standaard model pullen
+  # 5. Wachten tot Ollama klaar is en daarna het standaard model pullen
   - |
     echo "Wachten tot Ollama beschikbaar is..."
     for i in $(seq 1 30); do
@@ -109,5 +115,5 @@ runcmd:
       && echo "Model ${default_model} succesvol gepulled." \
       || echo "WAARSCHUWING: Model pull mislukt. Handmatig uitvoeren: ollama pull ${default_model}"
 
-  # 5. Setup-logboek bijwerken
+  # 6. Setup-logboek bijwerken
   - echo "Cloud-init voltooid op $(date)" >> /var/log/ollama-setup.log
