@@ -194,7 +194,9 @@ resource "azurerm_container_app" "ollama" {
 
   # Bij Consumption: gebruik het ingebouwde "Consumption" profiel.
   # Bij GPU-types: gebruik het aangemaakte workload profile.
-  workload_profile_name = var.workload_profile_type == "Consumption" ? "Consumption" : var.workload_profile_name
+  # Bij een Consumption-only environment mag workload_profile_name NIET worden opgegeven.
+  # Bij GPU-profielen verwijst het naar het profiel dat in de environment is aangemaakt.
+  workload_profile_name = var.workload_profile_type == "Consumption" ? null : var.workload_profile_name
 
   depends_on = [
     azurerm_container_app_environment_storage.ollama_models,
