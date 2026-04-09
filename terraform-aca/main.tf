@@ -1,5 +1,7 @@
 provider "azurerm" {
   features {}
+  # subscription_id wordt automatisch gelezen uit de ARM_SUBSCRIPTION_ID omgevingsvariabele
+  # die in de workflow is ingesteld. Expliciet opgeven is niet nodig.
 }
 
 # ── Resource Group ────────────────────────────────────────────────────────────
@@ -33,10 +35,11 @@ resource "azurerm_storage_account" "ollama_aca" {
 }
 
 resource "azurerm_storage_share" "ollama_models" {
-  name                 = "ollama-models"
-  storage_account_name = azurerm_storage_account.ollama_aca.name
-  quota                = var.file_share_quota_gb
+  name               = "ollama-models"
+  storage_account_id = azurerm_storage_account.ollama_aca.id
+  quota              = var.file_share_quota_gb
   # SMB protocol (standaard) — geen custom VNet vereist.
+  # storage_account_name is verwijderd in azurerm 4.x; storage_account_id wordt gebruikt.
 }
 
 # ── Container App Environment ─────────────────────────────────────────────────
