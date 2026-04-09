@@ -170,11 +170,12 @@ resource "azurerm_container_app" "ollama" {
 
       # Readiness probe: wacht met traffic sturen tot Ollama klaar is.
       # Kritiek bij cold starts — model laden van Azure Files kan 1-5 min duren.
+      # initial_delay is niet ondersteund in readiness_probe (alleen in liveness_probe).
+      # failure_count_threshold = 10 x interval_seconds 10 = 100 sec wachttijd voor startup.
       readiness_probe {
         transport               = "HTTP"
         port                    = var.ollama_port
         path                    = "/api/tags"
-        initial_delay           = 30
         interval_seconds        = 10
         timeout                 = 5
         success_count_threshold = 1
