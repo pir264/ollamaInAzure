@@ -1,7 +1,10 @@
 provider "azurerm" {
   features {}
-  # subscription_id wordt automatisch gelezen uit de ARM_SUBSCRIPTION_ID omgevingsvariabele
-  # die in de workflow is ingesteld. Expliciet opgeven is niet nodig.
+  # subscription_id wordt automatisch gelezen uit de ARM_SUBSCRIPTION_ID omgevingsvariabele.
+}
+
+provider "azapi" {
+  # Gebruikt voor het ACA environment — werkt met dezelfde ARM_* omgevingsvariabelen.
 }
 
 # ── Resource Group ────────────────────────────────────────────────────────────
@@ -42,24 +45,41 @@ resource "azurerm_storage_share" "ollama_models" {
   # storage_account_name is verwijderd in azurerm 4.x; storage_account_id wordt gebruikt.
 }
 
-# ── Container App Environment ─────────────────────────────────────────────────
-# Bij workload_profile_type = "Consumption" is het ingebouwde Consumption profile
-# al aanwezig; geen extra workload_profile blok nodig.
-# Bij GPU-types wordt het profiel dynamisch toegevoegd.
-resource "azurerm_container_app_environment" "ollama_aca" {
-  name                       = "cae-ollama-aca"
-  location                   = azurerm_resource_group.ollama_aca.location
-  resource_group_name        = azurerm_resource_group.ollama_aca.name
-  log_analytics_workspace_id = azurerm_log_analytics_workspace.ollama_aca.id
-  tags                       = var.tags
+# ── Container App Environment (via azapi) ─────────────────────────────────────
+# Gebruik azapi in plaats van azurerm_container_app_environment omdat azurerm 4.x
+# altijd MinimumCount meestuurt, wat Azure weigert voor GPU Consumption profielen.
+# azapi stuurt exact de velden die we opgeven — niets meer.
+#
+# workloadProfiles wordt alleen gevuld als een GPU-type is gekozen.
+# Bij "Consumption" (CPU-only) is geen workloadProfiles nodig — dat profiel is ingebouwd.
+locals {
+  gpu_workload_profiles = var.workload_profile_type != "Consumption" ? [
+    {
+      name                = var.workload_profile_name
+      workloadProfileType = var.workload_profile_type
+      # MinimumCount en MaximumCount worden NIET meegegeven — niet ondersteund voor GPU Consumption profielen.
+    }
+  ] : []
+}
 
-  # Alleen een workload_profile blok toevoegen als een GPU-type is gekozen.
-  # Consumption GPU-profielen zijn serverless (geen min/max count).
-  dynamic "workload_profile" {
-    for_each = var.workload_profile_type != "Consumption" ? [1] : []
-    content {
-      name                  = var.workload_profile_name
-      workload_profile_type = var.workload_profile_type
+resource "azapi_resource" "ollama_aca_env" {
+  type      = "Microsoft.App/managedEnvironments@2024-03-01"
+  name      = "cae-ollama-aca"
+  location  = azurerm_resource_group.ollama_aca.location
+  parent_id = azurerm_resource_group.ollama_aca.id
+
+  tags = var.tags
+
+  body = {
+    properties = {
+      appLogsConfiguration = {
+        destination = "log-analytics"
+        logAnalyticsConfiguration = {
+          customerId = azurerm_log_analytics_workspace.ollama_aca.workspace_id
+          sharedKey  = azurerm_log_analytics_workspace.ollama_aca.primary_shared_key
+        }
+      }
+      workloadProfiles = length(local.gpu_workload_profiles) > 0 ? local.gpu_workload_profiles : null
     }
   }
 }
@@ -69,7 +89,7 @@ resource "azurerm_container_app_environment" "ollama_aca" {
 # de share kunnen mounten via een volume definitie.
 resource "azurerm_container_app_environment_storage" "ollama_models" {
   name                         = "ollama-models-storage"
-  container_app_environment_id = azurerm_container_app_environment.ollama_aca.id
+  container_app_environment_id = azapi_resource.ollama_aca_env.id
   account_name                 = azurerm_storage_account.ollama_aca.name
   share_name                   = azurerm_storage_share.ollama_models.name
   access_key                   = azurerm_storage_account.ollama_aca.primary_access_key
@@ -79,7 +99,7 @@ resource "azurerm_container_app_environment_storage" "ollama_models" {
 # ── Container App ─────────────────────────────────────────────────────────────
 resource "azurerm_container_app" "ollama" {
   name                         = "ca-ollama"
-  container_app_environment_id = azurerm_container_app_environment.ollama_aca.id
+  container_app_environment_id = azapi_resource.ollama_aca_env.id
   resource_group_name          = azurerm_resource_group.ollama_aca.name
   revision_mode                = "Single"
   tags                         = var.tags
