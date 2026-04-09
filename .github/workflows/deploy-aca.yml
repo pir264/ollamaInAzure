@@ -1,0 +1,158 @@
+name: Deploy ACA Infrastructure (Ollama)
+
+on:
+  workflow_dispatch:
+    inputs:
+      workload_profile_type:
+        description: |
+          ACA workload profile.
+          Consumption = CPU-only, gratis bij idle (standaard).
+          NC8as-T4 = NVIDIA T4, ~€1/uur actief (~€61/maand bij 2u/dag).
+          NC24-A100 = NVIDIA A100, ~€3,50/uur actief — OVERSCHRIJDT budget bij normaal gebruik.
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - "Consumption"
+          - "Consumption-GPU-NC8as-T4"
+          - "Consumption-GPU-NC24-A100"
+      container_cpu:
+        description: "CPU cores voor de container (0.5 voor Consumption, 8 voor T4, 24 voor A100)"
+        required: false
+        default: ""
+      container_memory:
+        description: "Geheugen voor de container (bijv. '1Gi' voor Consumption, '56Gi' voor T4)"
+        required: false
+        default: ""
+      destroy:
+        description: "Typ 'true' om alle ACA resources te verwijderen"
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+env:
+  TF_DIR: ./terraform-aca
+  ARM_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_CLIENT_SECRET:   ${{ secrets.AZURE_CLIENT_SECRET }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  ARM_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
+
+jobs:
+  terraform:
+    name: Terraform ACA ${{ github.event.inputs.destroy == 'true' && 'Destroy' || 'Apply' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Terraform Init
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ secrets.TF_BACKEND_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ secrets.TF_BACKEND_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ secrets.TF_BACKEND_CONTAINER }}"
+
+      - name: Bepaal configuratie
+        id: config
+        run: |
+          # Workload profile: workflow input > GitHub Variable > default
+          INPUT_PROFILE="${{ github.event.inputs.workload_profile_type }}"
+          VAR_PROFILE="${{ vars.ACA_WORKLOAD_PROFILE_TYPE }}"
+          PROFILE="${INPUT_PROFILE:-${VAR_PROFILE:-Consumption}}"
+          echo "profile=$PROFILE" >> "$GITHUB_OUTPUT"
+          echo "Workload profile: $PROFILE"
+
+          # CPU: workflow input > default per profile type
+          INPUT_CPU="${{ github.event.inputs.container_cpu }}"
+          if [ -n "$INPUT_CPU" ]; then
+            CPU="$INPUT_CPU"
+          elif [[ "$PROFILE" == *"A100"* ]]; then
+            CPU="24"
+          elif [[ "$PROFILE" == *"T4"* ]]; then
+            CPU="8"
+          else
+            CPU="0.5"
+          fi
+          echo "cpu=$CPU" >> "$GITHUB_OUTPUT"
+          echo "CPU: $CPU"
+
+          # Memory: workflow input > default per profile type
+          INPUT_MEM="${{ github.event.inputs.container_memory }}"
+          if [ -n "$INPUT_MEM" ]; then
+            MEM="$INPUT_MEM"
+          elif [[ "$PROFILE" == *"A100"* ]]; then
+            MEM="220Gi"
+          elif [[ "$PROFILE" == *"T4"* ]]; then
+            MEM="56Gi"
+          else
+            MEM="1Gi"
+          fi
+          echo "memory=$MEM" >> "$GITHUB_OUTPUT"
+          echo "Memory: $MEM"
+
+          # Budgetwaarschuwing bij A100
+          if [[ "$PROFILE" == *"A100"* ]]; then
+            echo "::warning::A100 GPU profiel geselecteerd. Kosten bij 2u/dag x 22 werkdagen: ~€171/maand. Dit OVERSCHRIJDT het budget van €100/maand."
+          fi
+
+      - name: Terraform Plan
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          EXTRA_FLAGS=""
+          if [ "${{ github.event.inputs.destroy }}" = "true" ]; then
+            EXTRA_FLAGS="-destroy"
+          fi
+
+          terraform plan $EXTRA_FLAGS \
+            -var="location=${{ vars.ACA_LOCATION }}" \
+            -var="resource_group_name=${{ vars.ACA_RESOURCE_GROUP_NAME }}" \
+            -var="storage_account_name=${{ vars.ACA_STORAGE_ACCOUNT_NAME }}" \
+            -var="workload_profile_type=${{ steps.config.outputs.profile }}" \
+            -var="container_cpu=${{ steps.config.outputs.cpu }}" \
+            -var="container_memory=${{ steps.config.outputs.memory }}" \
+            -var="allowed_ip=${{ vars.ALLOWED_IP }}" \
+            -var="ollama_port=${{ vars.OLLAMA_PORT }}" \
+            -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Verbindingsgegevens tonen
+        if: github.event.inputs.destroy != 'true'
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          FQDN=$(terraform output -raw container_app_fqdn)
+          URL=$(terraform output -raw ollama_api_url)
+
+          echo "## Ollama ACA Deployment Geslaagd" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| | |" >> $GITHUB_STEP_SUMMARY
+          echo "|--|--|" >> $GITHUB_STEP_SUMMARY
+          echo "| Ollama API URL | \`$URL\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Workload profile | \`${{ steps.config.outputs.profile }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| CPU / Geheugen | \`${{ steps.config.outputs.cpu }} vCPU / ${{ steps.config.outputs.memory }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Kosten-advies:** $(terraform output -raw cost_advisory)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Cold start" >> $GITHUB_STEP_SUMMARY
+          echo "$(terraform output -raw cold_start_warning)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Eerste model pullen" >> $GITHUB_STEP_SUMMARY
+          echo "Wacht tot de container opgestart is, voer dan uit:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "curl $URL/api/pull -d '{\"name\":\"gemma4:latest\"}'" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Aanroepen vanuit Ollama client" >> $GITHUB_STEP_SUMMARY
+          echo "Stel je client in op: \`$URL\` (HTTPS, poort 443 — niet poort 11434)" >> $GITHUB_STEP_SUMMARY

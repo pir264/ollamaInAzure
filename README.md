@@ -178,6 +178,83 @@ Dit kan in één workflow-run zonder de data disk te verliezen:
 - `use_spot`: `true` of `false`
 - `recreate_vm`: `true`
 
+---
+
+## Azure Container Apps (ACA) — alternatieve deployment
+
+Naast de VM-gebaseerde setup is er een tweede pipeline die Ollama draait in Azure Container Apps. Voordeel: schaalt automatisch naar **0 replicas** na 15 minuten inactiviteit — je betaalt alleen wanneer je Ollama daadwerkelijk gebruikt.
+
+### Wanneer ACA kiezen vs VM?
+
+| | VM (Spot) | ACA |
+|--|-----------|-----|
+| Cold start | ~90 sec (VM opstarten) | 30–90 sec container + 1–5 min model laden |
+| Altijd-aan kosten | ~€20/maand (disk + IP) | ~€14-17/maand (storage + logs) |
+| GPU | A10 Spot (~€0,10/uur) | T4 serverless (~€1/uur) |
+| Bediening | Handmatig starten/stoppen via workflow | Automatisch, op basis van requests |
+| Toegang | HTTP op poort 11434 | HTTPS op poort 443 |
+
+### Vereiste GitHub Variables (ACA-specifiek)
+
+Ga naar: **Settings → Secrets and variables → Actions → Variables**
+
+| Variable | Standaard | Beschrijving |
+|----------|-----------|--------------|
+| `ACA_LOCATION` | `swedencentral` | Regio — `westeurope` heeft **geen** GPU ACA-profielen |
+| `ACA_RESOURCE_GROUP_NAME` | `rg-ollama-aca-prod` | Aparte resource group van de VM |
+| `ACA_STORAGE_ACCOUNT_NAME` | `stollamaacamodels` | Globaal uniek, 3-24 tekens |
+| `ACA_WORKLOAD_PROFILE_TYPE` | `Consumption` | GPU opt-in via `Consumption-GPU-NC8as-T4` |
+
+### ACA deployen
+
+**Actions → Deploy ACA Infrastructure → Run workflow**
+
+Optionele inputs:
+- `workload_profile_type`: kies `Consumption` (CPU), `Consumption-GPU-NC8as-T4` (T4) of `Consumption-GPU-NC24-A100` (A100)
+- `container_cpu` en `container_memory`: worden automatisch ingesteld op basis van het profiel
+
+De workflow toont na deployment de HTTPS URL en kosten-advies in de samenvatting.
+
+### ACA GPU workload profiles
+
+| Profile | GPU | ~Kosten/uur | Budget (2u/dag, 22 werkdagen) |
+|---------|-----|-------------|-------------------------------|
+| `Consumption` | Geen | ~€0,03 | ~€16/maand totaal |
+| `Consumption-GPU-NC8as-T4` | NVIDIA T4 | ~€1,00 | ~€61/maand |
+| `Consumption-GPU-NC24-A100` | NVIDIA A100 | ~€3,50 | ~€171/maand ⚠️ |
+
+> ⚠️ GPU-profielen vereisen mogelijk een quota-aanvraag bij Azure Support. Controleer beschikbaarheid via:
+> ```bash
+> az containerapp env workload-profile list-supported --location swedencentral --output table
+> ```
+
+### Ollama aanroepen via ACA
+
+ACA exposeert altijd **HTTPS op poort 443** — niet poort 11434. Stel je client in op de URL uit de workflow-samenvatting:
+
+```bash
+# Model pullen (eerste keer)
+curl https://<fqdn>/api/pull -d '{"name":"gemma4:latest"}'
+
+# Genereren
+curl https://<fqdn>/api/generate \
+  -d '{"model":"gemma4:latest","prompt":"Hallo, hoe gaat het?"}'
+```
+
+### Cold start
+
+Na 15 minuten inactiviteit schaalt ACA naar 0. De eerste request daarna wacht:
+1. ~30–90 sec voor container startup
+2. ~1–5 min voor model laden van Azure Files
+
+Stel je client timeout in op minimaal **5 minuten**.
+
+### ACA infrastructuur verwijderen
+
+**Actions → Deploy ACA Infrastructure → Run workflow**, vul bij `destroy` de waarde `true` in.
+
+---
+
 ## Extra model toevoegen
 
 SSH naar de VM en voer uit:
