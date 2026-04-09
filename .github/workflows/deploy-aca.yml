@@ -54,6 +54,31 @@ jobs:
         with:
           terraform_version: "1.7.5"
 
+      - name: Azure Login (voor provider registratie)
+        uses: azure/login@v2
+        with:
+          creds: |
+            {
+              "clientId": "${{ secrets.AZURE_CLIENT_ID }}",
+              "clientSecret": "${{ secrets.AZURE_CLIENT_SECRET }}",
+              "subscriptionId": "${{ secrets.AZURE_SUBSCRIPTION_ID }}",
+              "tenantId": "${{ secrets.AZURE_TENANT_ID }}"
+            }
+
+      - name: Registreer benodigde Azure resource providers
+        run: |
+          # Eenmalige registratie — idempotent, veilig om elke keer uit te voeren.
+          for NAMESPACE in Microsoft.App Microsoft.OperationalInsights Microsoft.ContainerService; do
+            STATE=$(az provider show --namespace "$NAMESPACE" --query registrationState -o tsv 2>/dev/null || echo "NotFound")
+            if [ "$STATE" != "Registered" ]; then
+              echo "Registreren: $NAMESPACE..."
+              az provider register --namespace "$NAMESPACE" --wait
+              echo "$NAMESPACE geregistreerd."
+            else
+              echo "$NAMESPACE is al geregistreerd."
+            fi
+          done
+
       - name: Terraform Init
         working-directory: ${{ env.TF_DIR }}
         run: |
